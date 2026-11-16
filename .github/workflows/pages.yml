@@ -1,0 +1,50 @@
+# Publishes the site (everything at the top of the repository except .github, tools and README.md) to
+# GitHub Pages. Needs Settings, Pages, Source set to "GitHub Actions". latest-json.yml calls it after
+# committing a new latest.json, since a commit pushed with GITHUB_TOKEN starts no other workflow.
+name: pages
+
+on:
+  push:
+    branches: [main]
+  workflow_dispatch:
+  workflow_call:
+    inputs:
+      ref:
+        description: Commit to publish (the caller's new commit)
+        type: string
+        required: false
+        default: ''
+
+permissions: {}
+
+jobs:
+  deploy:
+    if: github.ref == 'refs/heads/main'
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    concurrency:
+      group: pages
+      cancel-in-progress: false
+    permissions:
+      contents: read
+      pages: write
+      id-token: write
+    environment:
+      name: github-pages
+      url: ${{ steps.deployment.outputs.page_url }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: ${{ inputs.ref || github.sha }}
+          persist-credentials: false
+      - name: Stage the site
+        run: |
+          rsync -a --exclude .git --exclude .github --exclude tools --exclude README.md --exclude _site ./ _site/
+          test -f _site/index.html && test -f _site/android.html && node -e 'JSON.parse(require("fs").readFileSync("_site/latest.json", "utf8"))'
+          ls -la _site
+      - uses: actions/configure-pages@45bfe0192ca1faeb007ade9deae92b16b8254a0d # v6.0.0
+      - uses: actions/upload-pages-artifact@fc324d3547104276b827a68afc52ff2a11cc49c9 # v5.0.0
+        with:
+          path: _site
+      - id: deployment
+        uses: actions/deploy-pages@368f82528645a54fb793d4d04e342629a3f51346 # v5.0.1

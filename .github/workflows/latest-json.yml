@@ -1,0 +1,82 @@
+# Every 10 minutes, asks App Store Connect which iOS builds testers can install and, if that changed,
+# commits latest.json and republishes the site. See README.md.
+name: latest-json
+
+on:
+  schedule:
+    - cron: '4-59/10 * * * *' # every 10 minutes, off the top of the hour, when GitHub delays schedules
+  workflow_dispatch:
+    inputs:
+      dry_run:
+        description: Only print what latest.json would become
+        type: boolean
+        default: false
+
+permissions: {}
+
+concurrency:
+  group: latest-json
+  cancel-in-progress: false
+
+jobs:
+  check:
+    if: github.ref == 'refs/heads/main'
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    permissions:
+      contents: write
+    outputs:
+      commit: ${{ steps.commit.outputs.commit }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
+        with:
+          node-version: '24'
+      - name: Self-test
+        run: node --test tools/*.test.mjs
+      - name: Check for the App Store Connect key
+        id: key
+        env:
+          ASC_KEY_ID: ${{ secrets.ASC_KEY_ID }}
+          ASC_ISSUER_ID: ${{ secrets.ASC_ISSUER_ID }}
+          ASC_PRIVATE_KEY: ${{ secrets.ASC_PRIVATE_KEY }}
+        run: |
+          if [ -n "$ASC_KEY_ID" ] && [ -n "$ASC_ISSUER_ID" ] && [ -n "$ASC_PRIVATE_KEY" ]; then
+            echo "present=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "::notice::The ASC_KEY_ID, ASC_ISSUER_ID and ASC_PRIVATE_KEY secrets are not all set, so latest.json was not checked."
+            echo "present=false" >> "$GITHUB_OUTPUT"
+          fi
+      - name: Ask App Store Connect
+        id: run
+        if: steps.key.outputs.present == 'true'
+        env:
+          ASC_KEY_ID: ${{ secrets.ASC_KEY_ID }}
+          ASC_ISSUER_ID: ${{ secrets.ASC_ISSUER_ID }}
+          ASC_PRIVATE_KEY: ${{ secrets.ASC_PRIVATE_KEY }}
+          DRY_RUN: ${{ github.event_name == 'workflow_dispatch' && inputs.dry_run && '--dry-run' || '' }}
+        run: node tools/latest-json.mjs $DRY_RUN
+      - name: Commit latest.json
+        id: commit
+        if: steps.run.outputs.changed == 'true'
+        env:
+          MESSAGE: ${{ steps.run.outputs.message }}
+        run: |
+          git config user.name 'github-actions[bot]'
+          git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
+          git add latest.json
+          git commit -m "$MESSAGE"
+          git pull --rebase origin main
+          git push origin HEAD:main
+          echo "commit=$(git rev-parse HEAD)" >> "$GITHUB_OUTPUT"
+
+  deploy:
+    needs: check
+    if: needs.check.outputs.commit != ''
+    permissions:
+      contents: read
+      pages: write
+      id-token: write
+    uses: ./.github/workflows/pages.yml
+    with:
+      ref: ${{ needs.check.outputs.commit }}
